@@ -7,9 +7,15 @@ extern char map[MAX_MAP_SIZE][MAX_MAP_SIZE];
 extern int rows;
 extern int cols;
 
+
 struct point_t{
     int x;
     int y;
+};
+
+struct dropped_treasure_t{
+    struct point_t point;
+    int value;
 };
 
 struct player_data_t{
@@ -18,6 +24,7 @@ struct player_data_t{
 
     enum type t;
 
+    struct point_t spawn_point;
     struct point_t position;
 
     int deaths;
@@ -37,6 +44,8 @@ struct server_data_t{
     int map_empty_space;
     int treasure_count;
 
+    
+
     int players_connected;
     struct player_data_t player_data[MAX_PLAYERS];
     pthread_t player_pt[MAX_PLAYERS];
@@ -44,11 +53,15 @@ struct server_data_t{
 
 int load_map(char* filename);
 void drop_coins(enum treasure_type t);
+enum map_elements collision_check(int player_id,struct point_t* point);
 void* key_handler(void* arg);
 void screen_setup();
 void close_screen();
 void init_colors();
 int player_init();
+void player_quit(int player_num);
+void player_collision_handle(int player_num);
+void player_move(int a,int player_num);
 void* player_connection(void* arg);
 void* players_queue(void* arg);
 void print_map();

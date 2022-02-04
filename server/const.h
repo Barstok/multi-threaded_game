@@ -40,12 +40,4 @@ enum type{
     CPU
 };
 
-enum dir_t{
-    DOWN,
-    RIGHT,
-    UP,
-    LEFT
-};
-
-
 #endif

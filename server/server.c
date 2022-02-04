@@ -248,7 +248,7 @@ void print_server_data(){
     col+=13;
     for(int x=0;x<MAX_PLAYERS;x++){
         if(server_data.player_data[x].connected){
-            mvprintw(row,col+11*x,"%d",server_data.player_data->PID);
+            mvprintw(row,col+11*x,"%d",server_data.player_data[x].PID);
             if(server_data.player_data[x].t==HUMAN){
                 mvprintw(row+1,col+11*x,"HUMAN");
             }else{
@@ -263,29 +263,8 @@ void print_server_data(){
     }
 }
 
-enum map_elements collision_check(int player_id,enum dir_t dir){
-    struct player_data_t* player=&server_data.player_data[player_id];
-
-    struct point_t desired_pos;
-    desired_pos.x=player->position.x;
-    desired_pos.y=player->position.y;
-
-    switch(dir){
-        case UP:
-            desired_pos.x--;
-            break;
-        case DOWN:
-            desired_pos.x++;
-            break;
-        case LEFT:
-            desired_pos.y--;
-            break;
-        case RIGHT:
-            desired_pos.y++;
-            break;
-    }
-
-    switch(map[desired_pos.x][desired_pos.y]){
+enum map_elements collision_check(int player_id,struct point_t* point){ 
+     switch(map[point->x][point->y]){
         case '|':
             return WALL;
         case 'c':
@@ -296,6 +275,8 @@ enum map_elements collision_check(int player_id,enum dir_t dir){
             return BEAST;
         case '#':
             return BUSH;
+        case 'A':
+            return CAMPSITE;
         case ' ': 
             return DEFAULT;
     }
@@ -323,10 +304,17 @@ int player_init(int pid){
         if(map[x][y]==' '){
             server_data.player_data[player_num].position.x=x;
             server_data.player_data[player_num].position.y=y;
+            server_data.player_data[player_num].spawn_point.x=x;
+            server_data.player_data[player_num].spawn_point.y=y;
             break;
         }
     }
     return player_num;
+}
+
+void player_quit(int player_num){
+    server_data.player_data[player_num].connected=0;
+    server_data.players_connected--;
 }
 void* player_connection(void* arg){
     int player_num = *(int*)arg;
@@ -339,32 +327,116 @@ void* player_connection(void* arg){
     int fd = open(fifo_dir,O_RDONLY);
 
     while(1){
-
+        if(server_data.server_state==CLOSED){
+            close(fd);
+            remove(fifo_dir);
+            return NULL;
+        }
         int a;
 
-        read(fd,&a,sizeof(int));
+        if(read(fd,&a,sizeof(int))==-1){
+            player->PID=997;
+                player_quit(player_num);
+                close(fd);
+                remove(fifo_dir);
+                return NULL;
+        }
 
         switch(a){
-            case KEY_LEFT:
-                if(collision_check(player_num,LEFT)!=WALL) player->position.y--;
-                break;
-            case KEY_DOWN:
-                if(collision_check(player_num,DOWN)!=WALL) player->position.x++;
-                break;
-            case KEY_UP:
-                if(collision_check(player_num,UP)!=WALL) player->position.x--;
-                break;
-            case KEY_RIGHT:
-                if(collision_check(player_num,RIGHT)!=WALL) player->position.y++;
-                break;
-            default:
-            player->PID=0;
+            case 'q':
+                player_quit(player_num);
                 close(fd);
-                break;
+                remove(fifo_dir);
+                return NULL;
+            default:
+                player_move(a,player_num);
         }
 
         usleep(1000*ROUND_TIME_MS);
     }
+}
+
+void player_collision_handle(int player_num){
+    struct player_data_t* player=&server_data.player_data[player_num];
+    for(int x=0;x<MAX_PLAYERS;x++){
+        struct player_data_t* player_comp=&server_data.player_data[x];
+        
+        if(x!=player_num&&player->connected){
+            if(player->position.x==player_comp->position.x&&
+            player->position.y==player_comp->position.y){
+                player->position.x=player->spawn_point.x;
+                player->position.y=player->spawn_point.y;
+                player->coins_carried=0;
+                player->deaths++;
+
+                player_comp->position.x=player_comp->spawn_point.x;
+                player_comp->position.y=player_comp->spawn_point.y;
+                player_comp->coins_carried=0;
+                player_comp->deaths++;
+                return;
+            }
+        }
+    }
+}
+
+void player_move(int a,int player_num){
+    struct player_data_t* player=&server_data.player_data[player_num];
+    struct point_t desired_pos={.x=player->position.x,
+                                .y=player->position.y};
+
+    switch(a){
+        case KEY_LEFT:
+            desired_pos.y--;
+            break;
+        case KEY_DOWN:
+            desired_pos.x++;
+            break;
+        case KEY_UP:
+            desired_pos.x--;
+            break;
+        case KEY_RIGHT:
+            desired_pos.y++;
+            break;
+    }
+
+    switch(collision_check(player_num,&desired_pos)){
+        case WALL:
+            return;
+        case BUSH:
+            if(player->slowed_down){
+                player->slowed_down=0;
+                return;
+            }
+            else player->slowed_down=1;
+            break;
+        case DEFAULT:
+            player->slowed_down=0;
+            break;
+        case COIN:
+            player->slowed_down=0;
+            switch(map[desired_pos.x][desired_pos.y]){
+                case 'c':
+                    player->coins_carried+=1;
+                    break;
+                case 't':
+                    player->coins_carried+=10;
+                    break;
+                case 'T':
+                    player->coins_carried+=50;
+                    break;
+            }
+            map[desired_pos.x][desired_pos.y]=' ';
+            break;
+        case CAMPSITE:
+            player->slowed_down=0;
+            player->coins_brought+=player->coins_carried;
+            player->coins_carried=0;
+    }
+
+    player->position.x=desired_pos.x;
+    player->position.y=desired_pos.y;
+
+    player_collision_handle(player_num);
 }
 
 void* players_queue(void* arg){
@@ -372,12 +444,23 @@ void* players_queue(void* arg){
 
     int qd = open("../temp/queue",O_RDONLY);
 
-    server_data.players_connected++;
-    int pid;
-    read(qd,&pid,sizeof(int));
-
-    int player_num = player_init(pid);
-    pthread_create(&server_data.player_pt[player_num],NULL,player_connection,&player_num);
+    while(1){
+        if(server_data.server_state==CLOSED){
+            for(int x=0;x<MAX_PLAYERS;x++){
+                pthread_join(server_data.player_pt[x],NULL);
+            }
+            close(qd);
+            remove("../temp/queue");
+            return NULL;
+        }
+        int pid;
+        if(read(qd,&pid,sizeof(int))==sizeof(int)){
+            server_data.players_connected++;
+            int player_num = player_init(pid);
+            pthread_create(&server_data.player_pt[player_num],NULL,player_connection,&player_num);
+        }
+        usleep(1000*ROUND_TIME_MS);
+    }
 
     close(qd);
     remove("../temp/queue");

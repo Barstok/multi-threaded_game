@@ -24,6 +24,8 @@ int main(){
     int pid = getpid();
     int res=write(qd,&pid,sizeof(int));
 
+    close(qd);
+
     char client_fifo_dir[22];
 
     sprintf(client_fifo_dir,"../temp/%d_c_fifo",pid);
@@ -44,10 +46,12 @@ int main(){
 
         write(fd,&a,sizeof(int));
 
+        if(a=='q') break;
+
         usleep(1000*ROUND_TIME_MS);
     }
 
-    close(qd);
+    close(fd);
     endwin();
     
     return 0;
