@@ -61,6 +61,39 @@ void drop_coins(enum treasure_type t){
     }
 }
 
+void dropped_treasure_insert(int x, int y, int value){
+    struct dropped_treasure_t* temp=server_data.dropped_treasure.head;
+
+    if(!temp){
+       server_data.dropped_treasure.head=malloc(sizeof(struct dropped_treasure_t));
+       server_data.dropped_treasure.head->point.x=x;
+       server_data.dropped_treasure.head->point.y=y;
+       server_data.dropped_treasure.head->value=value;
+       server_data.dropped_treasure.head->next=NULL;
+       return;
+    }
+
+    while(temp->next){
+        temp=temp->next;
+    }
+
+    temp->next=malloc(sizeof(struct dropped_treasure_t));
+    temp->next->point.x=x;
+    temp->next->point.y=y;
+    temp->next->value=value;
+    temp->next->next=NULL;
+}
+void dropped_treasure_list_clear(){
+    struct dropped_treasure_t* temp=server_data.dropped_treasure.head;
+
+    while(temp){
+        temp=temp->next;
+        free(server_data.dropped_treasure.head);
+        server_data.dropped_treasure.head=NULL;
+        server_data.dropped_treasure.head=temp;
+    }
+}
+
 void* key_handler(void* arg){
     while(1){
         char a = getchar();
@@ -89,6 +122,8 @@ void server_data_init(){
     server_data.players_connected=0;
     server_data.round_number=0;
     server_data.treasure_count=0;
+    
+    server_data.dropped_treasure.head=NULL;
 
     server_data.player_data[0].connected=0;
     server_data.player_data[1].connected=0;
@@ -164,6 +199,13 @@ void print_map(){
 
             mvprintw(player->position.x,player->position.y,"%c",x+1+'0');
         }
+    }
+
+    struct dropped_treasure_t* temp = server_data.dropped_treasure.head;
+    attron(COLOR_PAIR(COIN));
+    while(temp){
+        mvprintw(temp->point.x,temp->point.y,"D");
+        temp=temp->next;
     }
 }
 
@@ -254,11 +296,19 @@ void print_server_data(){
             }else{
                 mvprintw(row+1,col+11*x,"CPU");
             }
-            mvprintw(row+2,col+11*x,"(%d,%d)",server_data.player_data[x].position.x,server_data.player_data[x].position.y);
-            mvprintw(row+3,col+11*x,"%d",server_data.player_data[x].deaths);
+            mvprintw(row+2,col+11*x,"(%d,%d)     ",server_data.player_data[x].position.x,server_data.player_data[x].position.y);
+            mvprintw(row+3,col+11*x,"%d    ",server_data.player_data[x].deaths);
 
-            mvprintw(row+6,col+11*x,"%d",server_data.player_data[x].coins_carried);
-            mvprintw(row+7,col+11*x,"%d",server_data.player_data[x].coins_brought);
+            mvprintw(row+6,col+11*x,"%d    ",server_data.player_data[x].coins_carried);
+            mvprintw(row+7,col+11*x,"%d    ",server_data.player_data[x].coins_brought);
+        }
+        else{
+            mvprintw(row,col+11*x,"    ");
+            mvprintw(row+1,col+11*x,"       ");
+            mvprintw(row+2,col+11*x,"       ");
+            mvprintw(row+3,col+11*x,"     ");
+            mvprintw(row+6,col+11*x,"     ");
+            mvprintw(row+7,col+11*x,"     ");
         }
     }
 }
@@ -364,6 +414,8 @@ void player_collision_handle(int player_num){
         if(x!=player_num&&player->connected){
             if(player->position.x==player_comp->position.x&&
             player->position.y==player_comp->position.y){
+                if(player->coins_carried+player_comp->coins_carried)
+                    dropped_treasure_insert(player->position.x,player->position.y,player->coins_carried+player_comp->coins_carried);
                 player->position.x=player->spawn_point.x;
                 player->position.y=player->spawn_point.y;
                 player->coins_carried=0;
@@ -435,6 +487,23 @@ void player_move(int a,int player_num){
 
     player->position.x=desired_pos.x;
     player->position.y=desired_pos.y;
+
+    struct dropped_treasure_t* temp=server_data.dropped_treasure.head;
+    struct dropped_treasure_t* prev=NULL;
+
+    while(temp){
+        if(temp->point.x==player->position.x&&temp->point.y==player->position.y){
+            player->coins_carried+=temp->value;
+            if(prev) prev->next=temp->next;
+            else{
+                server_data.dropped_treasure.head=server_data.dropped_treasure.head->next;
+            }
+            free(temp);
+            return;
+        }
+        prev=temp;
+        temp=temp->next;
+    }
 
     player_collision_handle(player_num);
 }

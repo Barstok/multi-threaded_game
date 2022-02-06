@@ -16,6 +16,11 @@ struct point_t{
 struct dropped_treasure_t{
     struct point_t point;
     int value;
+    struct dropped_treasure_t* next;
+};
+
+struct dropped_treasure_list_t{
+    struct dropped_treasure_t* head;
 };
 
 struct player_data_t{
@@ -44,12 +49,15 @@ struct server_data_t{
     int map_empty_space;
     int treasure_count;
 
-    
+    struct dropped_treasure_list_t dropped_treasure;
 
     int players_connected;
     struct player_data_t player_data[MAX_PLAYERS];
     pthread_t player_pt[MAX_PLAYERS];
 };
+
+void dropped_treasure_insert(int x, int y, int value);
+void dropped_treasure_list_clear();
 
 int load_map(char* filename);
 void drop_coins(enum treasure_type t);
