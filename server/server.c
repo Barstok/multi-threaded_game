@@ -6,11 +6,14 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <string.h>
 #include <fcntl.h>
 
 char map[MAX_MAP_SIZE][MAX_MAP_SIZE];
 struct server_data_t server_data;
 int cols, rows;
+
+pthread_mutex_t beast_mt,game_data_mt;
 
 
 int load_map(char* filename){
@@ -108,6 +111,10 @@ void* key_handler(void* arg){
             case 'T':
                 drop_coins(LARGE_TREASURE);
                 break;
+            case 'b':
+            case 'B':
+                beast_init();
+                break;
             case 'q':
             case 'Q':
             server_data.server_state=CLOSED;
@@ -136,6 +143,7 @@ void server_data_init(){
     server_data.campsite.y=23;
     map[11][23] = 'A';
 
+    server_data.beasts_count=0;
 }
 
 void screen_setup(){
@@ -200,6 +208,13 @@ void print_map(){
             mvprintw(player->position.x,player->position.y,"%c",x+1+'0');
         }
     }
+
+    pthread_mutex_lock(&beast_mt);
+    for(int x=0;x<server_data.beasts_count;x++){
+        attron(COLOR_PAIR(BEAST));
+        mvprintw(server_data.beasts[x].pos.x,server_data.beasts[x].pos.y,"*");
+    }
+    pthread_mutex_unlock(&beast_mt);
 
     struct dropped_treasure_t* temp = server_data.dropped_treasure.head;
     attron(COLOR_PAIR(COIN));
@@ -313,7 +328,7 @@ void print_server_data(){
     }
 }
 
-enum map_elements collision_check(int player_id,struct point_t* point){ 
+enum map_elements collision_check(struct point_t* point){ 
      switch(map[point->x][point->y]){
         case '|':
             return WALL;
@@ -346,6 +361,7 @@ int player_init(int pid){
     server_data.player_data[player_num].slowed_down=0;
     server_data.player_data[player_num].coins_brought=0;
     server_data.player_data[player_num].coins_carried=0;
+    server_data.player_data[player_num].moved=1;
 
     while(1){
         int x=rand()%rows;
@@ -366,13 +382,15 @@ void player_quit(int player_num){
     server_data.player_data[player_num].connected=0;
     server_data.players_connected--;
 }
-void* player_connection(void* arg){
+void* player_connection_reader(void* arg){
     int player_num = *(int*)arg;
 
     struct player_data_t* player = &server_data.player_data[player_num];
 
     char fifo_dir[22];
     sprintf(fifo_dir,"../temp/%d_c_fifo",server_data.player_data[player_num].PID);
+
+    mkfifo(fifo_dir,0777);
 
     int fd = open(fifo_dir,O_RDONLY);
 
@@ -385,7 +403,6 @@ void* player_connection(void* arg){
         int a;
 
         if(read(fd,&a,sizeof(int))==-1){
-            player->PID=997;
                 player_quit(player_num);
                 close(fd);
                 remove(fifo_dir);
@@ -399,10 +416,98 @@ void* player_connection(void* arg){
                 remove(fifo_dir);
                 return NULL;
             default:
+                pthread_mutex_lock(&game_data_mt);
+                if(server_data.player_data[player_num].moved){
+                    pthread_mutex_unlock(&game_data_mt);
+                    usleep(1000*ROUND_TIME_MS);
+                    continue;
+                }
                 player_move(a,player_num);
+                server_data.player_data[player_num].moved=1;
+                pthread_mutex_unlock(&game_data_mt);
         }
 
         usleep(1000*ROUND_TIME_MS);
+    }
+}
+
+void* player_connection_sender(void* arg){
+    int player_num = *(int*)arg;
+
+    struct player_data_t* player = &server_data.player_data[player_num];
+
+    char fifo_dir[22];
+
+    sprintf(fifo_dir,"../temp/%d_s_fifo",server_data.player_data[player_num].PID);
+
+    mkfifo(fifo_dir,0777);
+
+    int fd = open(fifo_dir,O_WRONLY);
+
+    write(fd,&server_data.PID,sizeof(int));
+    int send_p_num=player_num+1;
+    write(fd,&send_p_num,sizeof(int));
+
+    while(1){
+        if(server_data.server_state==CLOSED||!server_data.player_data[player_num].connected){
+            close(fd);
+            remove(fifo_dir);
+            return NULL;
+        }
+
+        struct player_data_chunk_t p_data;
+
+        p_data.pos=player->position;
+        p_data.deaths=player->deaths;
+        p_data.coins_carried=player->coins_carried;
+        p_data.coins_brought=player->coins_brought;
+
+        p_data.round_number=server_data.round_number;
+
+        p_data.beginning=p_data.pos;
+        p_data.beginning.x-=2;
+        p_data.beginning.y-=2;
+
+        for(int x=0;x<SIGHT;x++){
+            for(int y=0;y<SIGHT;y++){
+                p_data.map_chunk[x][y]=map[p_data.beginning.x+x][p_data.beginning.y+y];
+            }
+        }
+        //todo player and beast printing
+        for(int x=0;x<MAX_PLAYERS;x++){
+            if(server_data.player_data[x].connected&&server_data.player_data[x].position.x>=p_data.beginning.x&&server_data.player_data[x].position.x<p_data.beginning.x+SIGHT&&
+            server_data.player_data[x].position.y>=p_data.beginning.y&&server_data.player_data[x].position.y<p_data.beginning.y+SIGHT){
+                p_data.map_chunk[server_data.player_data[x].position.x-p_data.beginning.x][server_data.player_data[x].position.y-p_data.beginning.y]=x+'0'+1;
+            }
+        }
+
+        for(int x=0;x<MAX_BEASTS;x++){
+            if(server_data.beasts[x].pos.x>=p_data.beginning.x&&server_data.beasts[x].pos.x<p_data.beginning.x+SIGHT&&
+            server_data.beasts[x].pos.y>=p_data.beginning.y&&server_data.beasts[x].pos.y<p_data.beginning.y+SIGHT){
+                p_data.map_chunk[server_data.beasts[x].pos.x-p_data.beginning.x][server_data.beasts[x].pos.y-p_data.beginning.y]='*';
+            }
+        }
+
+        write(fd,&p_data,sizeof(struct player_data_chunk_t));
+
+        usleep(1000*ROUND_TIME_MS);
+    }
+}
+
+void beast_collision_handle(int beast_num){
+    for(int x=0;x<MAX_PLAYERS;x++){
+        struct player_data_t* player_comp=&server_data.player_data[x];
+        if(player_comp->connected){
+                if(player_comp->position.x==server_data.beasts[beast_num].pos.x&&player_comp->position.y==server_data.beasts[beast_num].pos.y){
+                    if(player_comp->coins_carried)   dropped_treasure_insert(player_comp->position.x,player_comp->position.y,player_comp->coins_carried);
+
+                    player_comp->position.x=player_comp->spawn_point.x;
+                    player_comp->position.y=player_comp->spawn_point.y;
+                    player_comp->coins_carried=0;
+                    player_comp->deaths++;
+                    return;
+                }
+        }
     }
 }
 
@@ -410,6 +515,19 @@ void player_collision_handle(int player_num){
     struct player_data_t* player=&server_data.player_data[player_num];
     for(int x=0;x<MAX_PLAYERS;x++){
         struct player_data_t* player_comp=&server_data.player_data[x];
+        if(player->connected){
+            for(int x=0;x<MAX_BEASTS;x++){
+                if(player->position.x==server_data.beasts[x].pos.x&&player->position.y==server_data.beasts[x].pos.y){
+                    if(player->coins_carried)   dropped_treasure_insert(player->position.x,player->position.y,player->coins_carried);
+
+                    player->position.x=player->spawn_point.x;
+                    player->position.y=player->spawn_point.y;
+                    player->coins_carried=0;
+                    player->deaths++;
+                    return;
+                }
+            }
+        }
         
         if(x!=player_num&&player->connected){
             if(player->position.x==player_comp->position.x&&
@@ -451,7 +569,7 @@ void player_move(int a,int player_num){
             break;
     }
 
-    switch(collision_check(player_num,&desired_pos)){
+    switch(collision_check(&desired_pos)){
         case WALL:
             return;
         case BUSH:
@@ -516,17 +634,19 @@ void* players_queue(void* arg){
     while(1){
         if(server_data.server_state==CLOSED){
             for(int x=0;x<MAX_PLAYERS;x++){
-                pthread_join(server_data.player_pt[x],NULL);
+                pthread_join(server_data.player_pt_r[x],NULL);
+                pthread_join(server_data.player_pt_s[x],NULL);
             }
             close(qd);
             remove("../temp/queue");
             return NULL;
         }
         int pid;
-        if(read(qd,&pid,sizeof(int))==sizeof(int)){
+        if(read(qd,&pid,sizeof(int))==sizeof(int)&&server_data.players_connected<MAX_PLAYERS){
             server_data.players_connected++;
             int player_num = player_init(pid);
-            pthread_create(&server_data.player_pt[player_num],NULL,player_connection,&player_num);
+            pthread_create(&server_data.player_pt_s[player_num],NULL,player_connection_sender,&player_num);
+            pthread_create(&server_data.player_pt_r[player_num],NULL,player_connection_reader,&player_num);
         }
         usleep(1000*ROUND_TIME_MS);
     }
@@ -545,7 +665,101 @@ void* print_screen(void* arg){
         print_server_data();
         refresh();
         usleep(ROUND_TIME_MS*1000);
+    }
+}
+
+void beast_init(){
+    pthread_mutex_lock(&beast_mt);
+    if(server_data.beasts_count>=MAX_BEASTS){
+        pthread_mutex_unlock(&beast_mt);
+        return;
+    }
+    struct beast_data_t* beast=&server_data.beasts[server_data.beasts_count];
+    beast->moved=1;
+    while(1){
+        int x=rand()%rows;
+        int y=rand()%cols;
+        if(map[x][y]!='|'){
+            beast->pos.x=x;
+            beast->pos.y=y;
+            break;
+        }
+    }
+    pthread_create(&server_data.beasts_pt[server_data.beasts_count],NULL,run_beast,&server_data.beasts_count);
+    server_data.beasts_count++;
+    pthread_mutex_unlock(&beast_mt);
+}
+
+void* run_beast(void* arg){
+    int index = *(int*)arg-1;
+
+    struct beast_data_t* beast=&server_data.beasts[index];
+    
+    struct point_t desired_pos;
+
+    while(1){
+        if(server_data.server_state==CLOSED) return NULL;
+        pthread_mutex_lock(&beast_mt);
+        if(beast->moved) {
+            pthread_mutex_unlock(&beast_mt);
+            usleep(1000*ROUND_TIME_MS);
+            continue;
+        }
+        pthread_mutex_unlock(&beast_mt);
+        desired_pos=beast->pos;
+        int dir = rand()%5;
+
+        switch(dir){
+            case 0:
+                break;
+            case 1:
+                desired_pos.x++;
+                if(collision_check(&desired_pos)!=WALL){
+                    beast->pos=desired_pos;
+                }
+                break;
+            case 2:
+                desired_pos.x--;
+                if(collision_check(&desired_pos)!=WALL){
+                    beast->pos=desired_pos;
+                }
+                break;
+            case 3:
+                desired_pos.y++;
+                if(collision_check(&desired_pos)!=WALL){
+                    beast->pos=desired_pos;
+                }
+                break;
+            case 4:
+                desired_pos.y--;
+                if(collision_check(&desired_pos)!=WALL){
+                    beast->pos=desired_pos;
+                }
+                break;
+        }
+        beast_collision_handle(index);
+        beast->moved=1;
+        usleep(1000*ROUND_TIME_MS);
+    }
+}
+
+void* run_clock(void* arg){
+    while(1){
+        if(server_data.server_state==CLOSED) return NULL;
+        pthread_mutex_lock(&beast_mt);
+        for(int x=0;x<server_data.beasts_count;x++){
+            server_data.beasts[x].moved=0;
+        }
+        pthread_mutex_unlock(&beast_mt);
+        for(int x=0;x<MAX_PLAYERS;x++){
+            pthread_mutex_lock(&game_data_mt);
+            if(server_data.player_data[x].connected){
+                server_data.player_data[x].moved=0;
+            }
+            pthread_mutex_unlock(&game_data_mt);
+        }
         server_data.round_number++;
+        usleep(2500*ROUND_TIME_MS);
     }
 }
 
@@ -556,15 +770,27 @@ void run_server(){
     load_map("map.txt");
     server_data_init();
 
-    pthread_t pt_screen,pt_key_handler,pt_players_queue;
+    pthread_mutex_init(&game_data_mt,NULL);
+    pthread_mutex_init(&beast_mt,NULL);
 
+    pthread_t pt_clock,pt_screen,pt_key_handler,pt_players_queue;
+
+    pthread_create(&pt_clock,NULL,run_clock,NULL);
     pthread_create(&pt_players_queue,NULL,players_queue,NULL);
     pthread_create(&pt_screen,NULL,print_screen,NULL);
     pthread_create(&pt_key_handler,NULL,key_handler,NULL);
 
+    pthread_join(pt_clock,NULL);
     pthread_join(pt_players_queue,NULL);
     pthread_join(pt_key_handler,NULL);
     pthread_join(pt_screen,NULL);
+
+    for(int x=0;x<server_data.beasts_count;x++){
+        pthread_join(server_data.beasts_pt[x],NULL);
+    }
+
+    pthread_mutex_destroy(&beast_mt);
+    pthread_mutex_destroy(&game_data_mt);
 
     close_screen();
 }
