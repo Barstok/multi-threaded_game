@@ -2,7 +2,7 @@
 
 Game created as a project for Operating Systems 2 subject. The goal was to learn IPC mechanisms and threads.
 
-The IPC mechanism used in the game are named pipes (FIFO). Thread synchronisation is done by mutexes.
+The IPC mechanism used in the game are named pipes (FIFO). Thread synchronization is done by mutexes.
 
 ---
 
